@@ -241,6 +241,9 @@ def publish():
                 logger.warning(f"清理临时文件失败: {str(e)}")
 
 
+# Vercel 需要这个
+application = app
+
 if __name__ == '__main__':
     # 本地开发
     app.run(debug=True, host='0.0.0.0', port=5000)

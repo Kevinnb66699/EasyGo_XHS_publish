@@ -250,15 +250,91 @@ def publish():
         try:
             logger.info("正在初始化小红书客户端...")
             sys.stdout.flush()
-            client = XhsClient(cookie=cookie)
-            logger.info("小红书客户端初始化成功")
+            
+            # 获取签名服务器 URL（必须配置）
+            sign_server_url = os.environ.get('XHS_SIGN_SERVER_URL', '')
+            
+            if not sign_server_url:
+                logger.error("❌ 未配置 XHS_SIGN_SERVER_URL 环境变量")
+                logger.error("在 Vercel 上必须配置外部签名服务器才能使用")
+                logger.error("请参考文档配置签名服务: https://github.com/ReaJason/xhs")
+                sys.stdout.flush()
+                return jsonify({
+                    'success': False,
+                    'error': 'XHS_SIGN_SERVER_URL environment variable is required',
+                    'message': 'Please configure an external signature service for Vercel deployment'
+                }), 500
+            
+            logger.info(f"✅ 使用外部签名服务: {sign_server_url}")
             sys.stdout.flush()
+            
+            # 使用外部签名服务
+            def external_sign(uri, data=None, a1="", web_session=""):
+                """调用外部签名服务"""
+                try:
+                    logger.info(f"请求签名 - URI: {uri}")
+                    sys.stdout.flush()
+                    
+                    response = requests.post(
+                        f"{sign_server_url}/sign",
+                        json={
+                            "uri": uri,
+                            "data": data,
+                            "a1": a1,
+                            "web_session": web_session
+                        },
+                        timeout=10
+                    )
+                    response.raise_for_status()
+                    signs = response.json()
+                    
+                    logger.info(f"签名获取成功: {signs}")
+                    sys.stdout.flush()
+                    return signs
+                except Exception as e:
+                    logger.error(f"签名服务请求失败: {str(e)}")
+                    sys.stdout.flush()
+                    raise
+            
+            # 创建客户端（必须提供 sign 参数）
+            client = XhsClient(cookie=cookie, sign=external_sign)
+            
+            logger.info("✅ 小红书客户端初始化成功")
+            logger.info(f"Client 类型: {type(client)}")
+            logger.info(f"External sign 函数: {client.external_sign}")
+            sys.stdout.flush()
+            
+            # 验证 create_image_note 方法是否存在和可调用
+            if not hasattr(client, 'create_image_note'):
+                logger.error("❌ XhsClient 没有 create_image_note 方法")
+                logger.error("可能是 xhs 库版本不兼容,请检查 requirements.txt")
+                sys.stdout.flush()
+                return jsonify({
+                    'success': False,
+                    'error': 'XhsClient does not have create_image_note method',
+                    'message': 'Please check xhs library version'
+                }), 500
+            
+            create_method = getattr(client, 'create_image_note', None)
+            if create_method is None or not callable(create_method):
+                logger.error(f"❌ create_image_note 不可调用: {create_method}")
+                sys.stdout.flush()
+                return jsonify({
+                    'success': False,
+                    'error': 'create_image_note method is not callable'
+                }), 500
+                
+            logger.info("✅ create_image_note 方法验证通过")
+            sys.stdout.flush()
+            
         except Exception as e:
-            logger.error(f"小红书客户端初始化失败: {str(e)}", exc_info=True)
+            logger.error(f"❌ 小红书客户端初始化失败: {str(e)}", exc_info=True)
             sys.stdout.flush()
             return jsonify({
                 'success': False,
-                'error': f'Failed to initialize XHS client: {str(e)}'
+                'error': f'Failed to initialize XHS client: {str(e)}',
+                'error_type': type(e).__name__,
+                'hint': 'Please check XHS_SIGN_SERVER_URL environment variable'
             }), 500
         
         # 4. 处理图片
@@ -305,7 +381,16 @@ def publish():
             logger.info(f"成功下载 {len(image_files)}/{len(urls_to_download)} 张图片")
             sys.stdout.flush()
         
-        # 5. 发布笔记
+        # 5. 验证是否有图片
+        if not image_files:
+            logger.error("小红书笔记必须包含至少一张图片")
+            sys.stdout.flush()
+            return jsonify({
+                'success': False,
+                'error': 'At least one image is required for XHS note'
+            }), 400
+        
+        # 6. 发布笔记
         @retry_on_failure(max_retries=3, delay=2)
         def publish_note():
             logger.info("开始发布笔记到小红书")
@@ -316,10 +401,18 @@ def publish():
                 logger.warning(f"标题被截断: {title} -> {truncated_title}")
                 sys.stdout.flush()
             
+            logger.info(f"调用 create_image_note，参数：")
+            logger.info(f"  title: {truncated_title}")
+            logger.info(f"  desc: {content[:50]}...")
+            logger.info(f"  files: {len(image_files)} 个文件")
+            logger.info(f"  is_private: {is_private}")
+            sys.stdout.flush()
+            
+            # 确保调用方法正确
             result = client.create_image_note(
-                title=truncated_title,
-                desc=content,
-                files=image_files if image_files else [],
+                truncated_title,  # title
+                content,           # desc
+                image_files,       # files
                 is_private=is_private
             )
             

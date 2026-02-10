@@ -59,6 +59,7 @@ def validate_cookie(cookie: str) -> bool:
     return all(field in cookie_dict for field in required_fields)
 
 
+@app.route('/', methods=['POST'])
 @app.route('/api/publish', methods=['POST'])
 def publish():
     """
@@ -246,22 +247,6 @@ def publish():
                     logger.info(f"已清理临时文件: {temp_file}")
             except Exception as e:
                 logger.warning(f"清理临时文件失败 ({temp_file}): {str(e)}")
-
-
-@app.route('/api/health', methods=['GET'])
-def health():
-    """健康检查接口"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'xiaohongshu-publish-api',
-        'version': '1.0.0'
-    }), 200
-
-
-# Vercel 需要这个
-def handler(request):
-    with app.request_context(request.environ):
-        return app.full_dispatch_request()
 
 
 if __name__ == '__main__':

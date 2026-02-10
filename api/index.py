@@ -59,8 +59,30 @@ def validate_cookie(cookie: str) -> bool:
     return all(field in cookie_dict for field in required_fields)
 
 
-@app.route('/', methods=['POST'])
-@app.route('/api/publish', methods=['POST'])
+@app.route('/')
+def index():
+    """API 根路径 - 映射到 /api/"""
+    return jsonify({
+        'message': 'XiaoHongShu Publish API',
+        'version': '1.0.0',
+        'endpoints': {
+            'health': '/api/health',
+            'publish': '/api/publish'
+        }
+    }), 200
+
+
+@app.route('/health')
+def health():
+    """健康检查接口 - 映射到 /api/health"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'xiaohongshu-publish-api',
+        'version': '1.0.0'
+    }), 200
+
+
+@app.route('/publish', methods=['POST'])
 def publish():
     """
     小红书笔记发布接口

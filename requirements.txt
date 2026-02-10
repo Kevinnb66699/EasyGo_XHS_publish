@@ -1,4 +1,4 @@
 Flask==3.0.0
-xhs==5.2.0
+xhs>=0.2.13
 requests==2.31.0
 Pillow==10.1.0

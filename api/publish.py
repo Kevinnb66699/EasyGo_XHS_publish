@@ -1,10 +1,12 @@
 from flask import Flask, request, jsonify
 from xhs import XhsClient
 import requests
-from io import BytesIO
 import logging
 import time
+import tempfile
+import os
 from functools import wraps
+from pathlib import Path
 
 # 配置日志
 logging.basicConfig(
@@ -82,6 +84,8 @@ def publish():
             "error": "错误信息（失败时）"
         }
     """
+    temp_files = []  # 在外层定义，确保 finally 块可以访问
+    
     try:
         # 1. 获取并验证 Cookie
         cookie = request.headers.get('X-XHS-Cookie')
@@ -143,8 +147,8 @@ def publish():
                 'error': f'Failed to initialize XHS client: {str(e)}'
             }), 500
         
-        # 4. 处理图片
-        images = []
+        # 4. 处理图片（下载到临时文件）
+        image_files = []
         urls_to_download = []
         
         if image_url:
@@ -161,22 +165,30 @@ def publish():
                     response = requests.get(url, timeout=30)
                     response.raise_for_status()
                     
-                    # 验证是否为有效图片
-                    from PIL import Image
-                    img = Image.open(BytesIO(response.content))
-                    img.verify()
+                    # 获取文件扩展名
+                    ext = Path(url).suffix or '.jpg'
+                    if ext.lower() not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                        ext = '.jpg'
                     
-                    # 重新读取图片内容（verify后需要重新读取）
-                    response = requests.get(url, timeout=30)
-                    images.append(BytesIO(response.content))
+                    # 创建临时文件
+                    temp_file = tempfile.NamedTemporaryFile(
+                        mode='wb', 
+                        suffix=ext, 
+                        delete=False
+                    )
+                    temp_file.write(response.content)
+                    temp_file.close()
                     
-                    logger.info(f"图片 {idx + 1} 下载成功，大小: {len(response.content)} bytes")
+                    temp_files.append(temp_file.name)
+                    image_files.append(temp_file.name)
+                    
+                    logger.info(f"图片 {idx + 1} 下载成功，大小: {len(response.content)} bytes，保存到: {temp_file.name}")
                 except requests.exceptions.RequestException as e:
                     logger.warning(f"图片 {idx + 1} 下载失败 ({url}): {str(e)}")
                 except Exception as e:
                     logger.warning(f"图片 {idx + 1} 处理失败 ({url}): {str(e)}")
             
-            logger.info(f"成功下载 {len(images)}/{len(urls_to_download)} 张图片")
+            logger.info(f"成功下载 {len(image_files)}/{len(urls_to_download)} 张图片")
         
         # 5. 发布笔记（带重试机制）
         @retry_on_failure(max_retries=3, delay=2)
@@ -188,33 +200,25 @@ def publish():
             if len(title) > 20:
                 logger.warning(f"标题被截断: {title} -> {truncated_title}")
             
+            # 调用 xhs 库的 create_image_note 方法
+            # 参数：title, desc, files (本地文件路径列表), is_private
             result = client.create_image_note(
                 title=truncated_title,
                 desc=content,
-                files=images if images else None,
+                files=image_files if image_files else [],
                 is_private=is_private
             )
             
             logger.info(f"小红书 API 返回: {result}")
             return result
         
-        try:
-            result = publish_note()
-        except Exception as e:
-            logger.error(f"发布笔记失败: {str(e)}")
-            return jsonify({
-                'success': False,
-                'error': f'Failed to publish note: {str(e)}'
-            }), 500
+        result = publish_note()
         
         # 6. 解析返回结果
         note_id = result.get('note_id') or result.get('id')
         if not note_id:
             logger.error(f"返回结果中没有找到 note_id: {result}")
-            return jsonify({
-                'success': False,
-                'error': 'Failed to get note_id from response'
-            }), 500
+            raise ValueError('Failed to get note_id from response')
         
         note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
         
@@ -227,11 +231,21 @@ def publish():
         }), 200
         
     except Exception as e:
-        logger.error(f"未预期的错误: {str(e)}", exc_info=True)
+        logger.error(f"发生错误: {str(e)}", exc_info=True)
         return jsonify({
             'success': False,
             'error': str(e)
         }), 500
+    
+    finally:
+        # 7. 清理临时文件
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+                    logger.info(f"已清理临时文件: {temp_file}")
+            except Exception as e:
+                logger.warning(f"清理临时文件失败 ({temp_file}): {str(e)}")
 
 
 @app.route('/api/health', methods=['GET'])

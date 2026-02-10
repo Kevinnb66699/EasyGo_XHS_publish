@@ -47,7 +47,6 @@ def validate_cookie(cookie: str) -> bool:
     """验证 Cookie 格式是否包含必要字段"""
     if not cookie:
         return False
-    # 检查是否包含必要的字段
     required_fields = ['a1']
     cookie_dict = {}
     for item in cookie.split(';'):
@@ -60,18 +59,17 @@ def validate_cookie(cookie: str) -> bool:
 
 
 @app.route('/')
-@app.route('/api')
-@app.route('/api/')
 def index():
     """API 根路径"""
     return jsonify({
         'message': 'XiaoHongShu Publish API',
         'version': '1.0.0',
+        'status': 'running',
         'endpoints': {
             'health': '/api/health',
             'publish': '/api/publish'
         }
-    }), 200
+    })
 
 
 @app.route('/api/health')
@@ -81,35 +79,13 @@ def health():
         'status': 'healthy',
         'service': 'xiaohongshu-publish-api',
         'version': '1.0.0'
-    }), 200
+    })
 
 
 @app.route('/api/publish', methods=['POST'])
 def publish():
-    """
-    小红书笔记发布接口
-    
-    请求头:
-        X-XHS-Cookie: 小红书 Cookie 字符串
-        
-    请求体:
-        {
-            "title": "笔记标题",
-            "content": "笔记内容",
-            "image_url": "单张图片URL（可选）",
-            "image_urls": ["图片URL数组（可选）"],
-            "is_private": false
-        }
-        
-    返回:
-        {
-            "success": true/false,
-            "note_id": "笔记ID",
-            "note_url": "笔记链接",
-            "error": "错误信息（失败时）"
-        }
-    """
-    temp_files = []  # 在外层定义，确保 finally 块可以访问
+    """小红书笔记发布接口"""
+    temp_files = []
     
     try:
         # 1. 获取并验证 Cookie
@@ -172,14 +148,14 @@ def publish():
                 'error': f'Failed to initialize XHS client: {str(e)}'
             }), 500
         
-        # 4. 处理图片（下载到临时文件）
+        # 4. 处理图片
         image_files = []
         urls_to_download = []
         
         if image_url:
             urls_to_download = [image_url]
         elif image_urls:
-            urls_to_download = image_urls[:9]  # 最多9张图片
+            urls_to_download = image_urls[:9]
         
         if urls_to_download:
             logger.info(f"开始下载 {len(urls_to_download)} 张图片")
@@ -190,12 +166,10 @@ def publish():
                     response = requests.get(url, timeout=30)
                     response.raise_for_status()
                     
-                    # 获取文件扩展名
                     ext = Path(url).suffix or '.jpg'
                     if ext.lower() not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
                         ext = '.jpg'
                     
-                    # 创建临时文件
                     temp_file = tempfile.NamedTemporaryFile(
                         mode='wb', 
                         suffix=ext, 
@@ -207,26 +181,21 @@ def publish():
                     temp_files.append(temp_file.name)
                     image_files.append(temp_file.name)
                     
-                    logger.info(f"图片 {idx + 1} 下载成功，大小: {len(response.content)} bytes，保存到: {temp_file.name}")
-                except requests.exceptions.RequestException as e:
-                    logger.warning(f"图片 {idx + 1} 下载失败 ({url}): {str(e)}")
+                    logger.info(f"图片 {idx + 1} 下载成功，大小: {len(response.content)} bytes")
                 except Exception as e:
-                    logger.warning(f"图片 {idx + 1} 处理失败 ({url}): {str(e)}")
+                    logger.warning(f"图片 {idx + 1} 处理失败: {str(e)}")
             
             logger.info(f"成功下载 {len(image_files)}/{len(urls_to_download)} 张图片")
         
-        # 5. 发布笔记（带重试机制）
+        # 5. 发布笔记
         @retry_on_failure(max_retries=3, delay=2)
         def publish_note():
             logger.info("开始发布笔记到小红书")
             
-            # 限制标题长度为20个字符
             truncated_title = title[:20]
             if len(title) > 20:
                 logger.warning(f"标题被截断: {title} -> {truncated_title}")
             
-            # 调用 xhs 库的 create_image_note 方法
-            # 参数：title, desc, files (本地文件路径列表), is_private
             result = client.create_image_note(
                 title=truncated_title,
                 desc=content,
@@ -239,7 +208,6 @@ def publish():
         
         result = publish_note()
         
-        # 6. 解析返回结果
         note_id = result.get('note_id') or result.get('id')
         if not note_id:
             logger.error(f"返回结果中没有找到 note_id: {result}")
@@ -253,7 +221,7 @@ def publish():
             'success': True,
             'note_id': note_id,
             'note_url': note_url
-        }), 200
+        })
         
     except Exception as e:
         logger.error(f"发生错误: {str(e)}", exc_info=True)
@@ -263,16 +231,11 @@ def publish():
         }), 500
     
     finally:
-        # 7. 清理临时文件
+        # 清理临时文件
         for temp_file in temp_files:
             try:
                 if os.path.exists(temp_file):
                     os.unlink(temp_file)
                     logger.info(f"已清理临时文件: {temp_file}")
             except Exception as e:
-                logger.warning(f"清理临时文件失败 ({temp_file}): {str(e)}")
-
-
-if __name__ == '__main__':
-    # 本地开发模式
-    app.run(debug=True, host='0.0.0.0', port=5000)
+                logger.warning(f"清理临时文件失败: {str(e)}")

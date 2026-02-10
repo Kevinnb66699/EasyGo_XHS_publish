@@ -1,0 +1,10 @@
+[project]
+name = "easygo-xhs-publish"
+version = "1.0.0"
+requires-python = ">=3.9"
+dependencies = [
+    "flask>=3.0,<4.0",
+    "xhs>=0.2.13",
+    "requests>=2.31.0",
+    "Pillow>=10.1.0",
+]

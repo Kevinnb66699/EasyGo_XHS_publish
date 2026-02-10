@@ -1,0 +1,255 @@
+from flask import Flask, request, jsonify
+from xhs import XhsClient
+import requests
+from io import BytesIO
+import logging
+import time
+from functools import wraps
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+
+def mask_cookie(cookie: str) -> str:
+    """隐藏敏感 Cookie 信息用于日志记录"""
+    if not cookie or len(cookie) < 10:
+        return "***"
+    return cookie[:10] + "..." + cookie[-5:]
+
+
+def retry_on_failure(max_retries=3, delay=1):
+    """指数退避重试装饰器"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    wait_time = delay * (2 ** attempt)
+                    logger.warning(f"第 {attempt + 1} 次尝试失败: {str(e)}，等待 {wait_time}秒后重试")
+                    time.sleep(wait_time)
+        return wrapper
+    return decorator
+
+
+def validate_cookie(cookie: str) -> bool:
+    """验证 Cookie 格式是否包含必要字段"""
+    if not cookie:
+        return False
+    # 检查是否包含必要的字段
+    required_fields = ['a1']
+    cookie_dict = {}
+    for item in cookie.split(';'):
+        item = item.strip()
+        if '=' in item:
+            key, value = item.split('=', 1)
+            cookie_dict[key.strip()] = value.strip()
+    
+    return all(field in cookie_dict for field in required_fields)
+
+
+@app.route('/api/publish', methods=['POST'])
+def publish():
+    """
+    小红书笔记发布接口
+    
+    请求头:
+        X-XHS-Cookie: 小红书 Cookie 字符串
+        
+    请求体:
+        {
+            "title": "笔记标题",
+            "content": "笔记内容",
+            "image_url": "单张图片URL（可选）",
+            "image_urls": ["图片URL数组（可选）"],
+            "is_private": false
+        }
+        
+    返回:
+        {
+            "success": true/false,
+            "note_id": "笔记ID",
+            "note_url": "笔记链接",
+            "error": "错误信息（失败时）"
+        }
+    """
+    try:
+        # 1. 获取并验证 Cookie
+        cookie = request.headers.get('X-XHS-Cookie')
+        if not cookie:
+            logger.error("请求缺少 X-XHS-Cookie header")
+            return jsonify({
+                'success': False,
+                'error': 'X-XHS-Cookie header is required'
+            }), 400
+        
+        logger.info(f"收到发布请求，Cookie: {mask_cookie(cookie)}")
+        
+        if not validate_cookie(cookie):
+            logger.error("Cookie 格式无效或缺少必要字段")
+            return jsonify({
+                'success': False,
+                'error': 'Invalid cookie format or expired'
+            }), 401
+        
+        # 2. 解析并验证请求体
+        data = request.get_json()
+        if not data:
+            logger.error("请求体为空")
+            return jsonify({
+                'success': False,
+                'error': 'Request body is required'
+            }), 400
+        
+        title = data.get('title')
+        content = data.get('content')
+        image_url = data.get('image_url')
+        image_urls = data.get('image_urls', [])
+        is_private = data.get('is_private', False)
+        
+        if not title:
+            logger.error("缺少 title 字段")
+            return jsonify({
+                'success': False,
+                'error': 'title is required'
+            }), 400
+            
+        if not content:
+            logger.error("缺少 content 字段")
+            return jsonify({
+                'success': False,
+                'error': 'content is required'
+            }), 400
+        
+        logger.info(f"笔记信息 - 标题: {title[:20]}, 内容长度: {len(content)}, 私密: {is_private}")
+        
+        # 3. 初始化小红书客户端
+        try:
+            client = XhsClient(cookie=cookie)
+            logger.info("小红书客户端初始化成功")
+        except Exception as e:
+            logger.error(f"小红书客户端初始化失败: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': f'Failed to initialize XHS client: {str(e)}'
+            }), 500
+        
+        # 4. 处理图片
+        images = []
+        urls_to_download = []
+        
+        if image_url:
+            urls_to_download = [image_url]
+        elif image_urls:
+            urls_to_download = image_urls[:9]  # 最多9张图片
+        
+        if urls_to_download:
+            logger.info(f"开始下载 {len(urls_to_download)} 张图片")
+            
+            for idx, url in enumerate(urls_to_download):
+                try:
+                    logger.info(f"下载图片 {idx + 1}/{len(urls_to_download)}: {url}")
+                    response = requests.get(url, timeout=30)
+                    response.raise_for_status()
+                    
+                    # 验证是否为有效图片
+                    from PIL import Image
+                    img = Image.open(BytesIO(response.content))
+                    img.verify()
+                    
+                    # 重新读取图片内容（verify后需要重新读取）
+                    response = requests.get(url, timeout=30)
+                    images.append(BytesIO(response.content))
+                    
+                    logger.info(f"图片 {idx + 1} 下载成功，大小: {len(response.content)} bytes")
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"图片 {idx + 1} 下载失败 ({url}): {str(e)}")
+                except Exception as e:
+                    logger.warning(f"图片 {idx + 1} 处理失败 ({url}): {str(e)}")
+            
+            logger.info(f"成功下载 {len(images)}/{len(urls_to_download)} 张图片")
+        
+        # 5. 发布笔记（带重试机制）
+        @retry_on_failure(max_retries=3, delay=2)
+        def publish_note():
+            logger.info("开始发布笔记到小红书")
+            
+            # 限制标题长度为20个字符
+            truncated_title = title[:20]
+            if len(title) > 20:
+                logger.warning(f"标题被截断: {title} -> {truncated_title}")
+            
+            result = client.create_image_note(
+                title=truncated_title,
+                desc=content,
+                files=images if images else None,
+                is_private=is_private
+            )
+            
+            logger.info(f"小红书 API 返回: {result}")
+            return result
+        
+        try:
+            result = publish_note()
+        except Exception as e:
+            logger.error(f"发布笔记失败: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': f'Failed to publish note: {str(e)}'
+            }), 500
+        
+        # 6. 解析返回结果
+        note_id = result.get('note_id') or result.get('id')
+        if not note_id:
+            logger.error(f"返回结果中没有找到 note_id: {result}")
+            return jsonify({
+                'success': False,
+                'error': 'Failed to get note_id from response'
+            }), 500
+        
+        note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
+        
+        logger.info(f"笔记发布成功! ID: {note_id}, URL: {note_url}")
+        
+        return jsonify({
+            'success': True,
+            'note_id': note_id,
+            'note_url': note_url
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"未预期的错误: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/health', methods=['GET'])
+def health():
+    """健康检查接口"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'xiaohongshu-publish-api',
+        'version': '1.0.0'
+    }), 200
+
+
+# Vercel 需要这个
+def handler(request):
+    with app.request_context(request.environ):
+        return app.full_dispatch_request()
+
+
+if __name__ == '__main__':
+    # 本地开发模式
+    app.run(debug=True, host='0.0.0.0', port=5000)

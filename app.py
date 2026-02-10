@@ -58,7 +58,7 @@ def validate_cookie(cookie: str) -> bool:
     return all(field in cookie_dict for field in required_fields)
 
 
-@app.route('/')
+@app.get('/')
 def index():
     """API 根路径"""
     return jsonify({
@@ -72,7 +72,7 @@ def index():
     })
 
 
-@app.route('/api/health')
+@app.get('/api/health')
 def health():
     """健康检查接口"""
     return jsonify({
@@ -82,7 +82,7 @@ def health():
     })
 
 
-@app.route('/api/publish', methods=['POST'])
+@app.post('/api/publish')
 def publish():
     """小红书笔记发布接口"""
     temp_files = []
@@ -239,3 +239,8 @@ def publish():
                     logger.info(f"已清理临时文件: {temp_file}")
             except Exception as e:
                 logger.warning(f"清理临时文件失败: {str(e)}")
+
+
+if __name__ == '__main__':
+    # 本地开发
+    app.run(debug=True, host='0.0.0.0', port=5000)

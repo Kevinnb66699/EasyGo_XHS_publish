@@ -60,8 +60,10 @@ def validate_cookie(cookie: str) -> bool:
 
 
 @app.route('/')
+@app.route('/api')
+@app.route('/api/')
 def index():
-    """API 根路径 - 映射到 /api/"""
+    """API 根路径"""
     return jsonify({
         'message': 'XiaoHongShu Publish API',
         'version': '1.0.0',
@@ -72,9 +74,9 @@ def index():
     }), 200
 
 
-@app.route('/health')
+@app.route('/api/health')
 def health():
-    """健康检查接口 - 映射到 /api/health"""
+    """健康检查接口"""
     return jsonify({
         'status': 'healthy',
         'service': 'xiaohongshu-publish-api',
@@ -82,7 +84,7 @@ def health():
     }), 200
 
 
-@app.route('/publish', methods=['POST'])
+@app.route('/api/publish', methods=['POST'])
 def publish():
     """
     小红书笔记发布接口

@@ -317,24 +317,25 @@ def publish():
                 调用外部签名服务（带重试机制）
                 参考：https://github.com/ReaJason/xhs/blob/master/example/basic_usage.py
                 
-                重要：必须将用户 Cookie 中的 a1、web_session 和 webId 传递给签名服务，
-                确保签名服务使用的 cookie 与请求使用的 cookie 一致，避免触发验证码。
+                重要发现（基于官方代码分析）：
+                1. 签名生成只依赖 uri 和 data，不使用 a1/web_session 参数
+                2. 签名服务器应该使用固定的 Cookie，不要每次请求都切换
+                3. 用户的 Cookie 用于实际的 API 请求，不影响签名生成
                 
-                官方文档明确指出：
-                "多账号使用统一签名服务请确保 cookie 中的 a1 字段统一，防止签名一直出现错误"
-                同时 webId 是浏览器指纹标识，必须保持一致！
+                因此新策略：
+                - 传递参数给签名服务（保持接口兼容）
+                - 但签名服务不会频繁切换 Cookie
+                - 避免触发小红书风控机制
                 """
-                # 如果 XhsClient 没有传递 a1/web_session，使用从 Cookie 中提取的值
+                # 如果 XhsClient 没有传递，使用从 Cookie 中提取的值（保持兼容）
                 actual_a1 = a1 if a1 else cookie_a1
                 actual_web_session = web_session if web_session else cookie_web_session
-                actual_web_id = cookie_web_id  # webId 必须使用用户的
+                actual_web_id = cookie_web_id
                 
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
                         logger.info(f"[尝试 {attempt + 1}/{max_retries}] 请求签名 - URI: {uri}")
-                        logger.info(f"[尝试 {attempt + 1}/{max_retries}] 使用 a1: {actual_a1[:20]}...")
-                        logger.info(f"[尝试 {attempt + 1}/{max_retries}] 使用 webId: {actual_web_id[:20]}...")
                         sys.stdout.flush()
                         
                         response = requests.post(
@@ -344,9 +345,9 @@ def publish():
                                 "data": data,
                                 "a1": actual_a1,
                                 "web_session": actual_web_session,
-                                "web_id": actual_web_id  # 传递 webId！
+                                "web_id": actual_web_id
                             },
-                            timeout=15  # 增加超时时间，因为签名服务内部也有重试
+                            timeout=15
                         )
                         response.raise_for_status()
                         signs = response.json()
@@ -363,14 +364,12 @@ def publish():
                         logger.warning(f"[尝试 {attempt + 1}/{max_retries}] ❌ 签名请求失败: {str(e)}")
                         sys.stdout.flush()
                         
-                        # 如果是最后一次尝试，抛出异常
                         if attempt == max_retries - 1:
                             logger.error(f"签名服务请求失败（重试{max_retries}次）")
                             sys.stdout.flush()
                             raise
                         
-                        # 否则等待后重试
-                        wait_time = 1 * (attempt + 1)  # 递增等待时间
+                        wait_time = 1 * (attempt + 1)
                         logger.info(f"等待 {wait_time} 秒后重试...")
                         sys.stdout.flush()
                         time.sleep(wait_time)

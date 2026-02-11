@@ -413,7 +413,9 @@ def publish():
             #进行一次请求，获取签名端a1，并设置到cookie中
             response = requests.get(f"{sign_server_url}/web_a1")
             web_a1 = response.json().get('web_a1')
-            cookie.replace(cookie_a1,web_a1,1)
+            logger.info(f"✅ 签名端a1: {web_a1}")
+            sys.stdout.flush()
+            cookie.replace(cookie_a1,web_a1)
             logger.info(f"✅ 更新后cookie: {cookie[:50]}...")
             sys.stdout.flush()
 

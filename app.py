@@ -414,7 +414,9 @@ def publish():
             response = requests.get(f"{sign_server_url}/web_a1")
             web_a1 = response.json().get('web_a1')
             cookie.replace(cookie_a1,web_a1,1)
-                
+            logger.info(f"✅ 更新后cookie: {cookie[:50]}...")
+            sys.stdout.flush()
+
             # 创建客户端（必须提供 sign 参数）
             client = XhsClient(cookie=cookie, sign=external_sign)
             

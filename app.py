@@ -293,7 +293,7 @@ def publish():
             logger.info(f"✅ 使用外部签名服务: {sign_server_url}")
             sys.stdout.flush()
             
-            # 从 Cookie 中提取 a1 和 web_session
+            # 从 Cookie 中提取必需的三个字段
             cookie_dict = {}
             for item in cookie.split(';'):
                 item = item.strip()
@@ -303,10 +303,12 @@ def publish():
             
             cookie_a1 = cookie_dict.get('a1', '')
             cookie_web_session = cookie_dict.get('web_session', '')
+            cookie_web_id = cookie_dict.get('webId', '')
             
             logger.info(f"📝 从 Cookie 提取认证信息:")
             logger.info(f"   a1: {cookie_a1[:20]}...")
             logger.info(f"   web_session: {cookie_web_session[:20]}...")
+            logger.info(f"   webId: {cookie_web_id[:20]}...")
             sys.stdout.flush()
             
             # 使用外部签名服务
@@ -315,21 +317,24 @@ def publish():
                 调用外部签名服务（带重试机制）
                 参考：https://github.com/ReaJason/xhs/blob/master/example/basic_usage.py
                 
-                重要：必须将用户 Cookie 中的 a1 和 web_session 传递给签名服务，
+                重要：必须将用户 Cookie 中的 a1、web_session 和 webId 传递给签名服务，
                 确保签名服务使用的 cookie 与请求使用的 cookie 一致，避免触发验证码。
                 
                 官方文档明确指出：
                 "多账号使用统一签名服务请确保 cookie 中的 a1 字段统一，防止签名一直出现错误"
+                同时 webId 是浏览器指纹标识，必须保持一致！
                 """
                 # 如果 XhsClient 没有传递 a1/web_session，使用从 Cookie 中提取的值
                 actual_a1 = a1 if a1 else cookie_a1
                 actual_web_session = web_session if web_session else cookie_web_session
+                actual_web_id = cookie_web_id  # webId 必须使用用户的
                 
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
                         logger.info(f"[尝试 {attempt + 1}/{max_retries}] 请求签名 - URI: {uri}")
                         logger.info(f"[尝试 {attempt + 1}/{max_retries}] 使用 a1: {actual_a1[:20]}...")
+                        logger.info(f"[尝试 {attempt + 1}/{max_retries}] 使用 webId: {actual_web_id[:20]}...")
                         sys.stdout.flush()
                         
                         response = requests.post(
@@ -338,7 +343,8 @@ def publish():
                                 "uri": uri,
                                 "data": data,
                                 "a1": actual_a1,
-                                "web_session": actual_web_session
+                                "web_session": actual_web_session,
+                                "web_id": actual_web_id  # 传递 webId！
                             },
                             timeout=15  # 增加超时时间，因为签名服务内部也有重试
                         )

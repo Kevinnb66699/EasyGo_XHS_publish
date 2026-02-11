@@ -270,31 +270,55 @@ def publish():
             
             # 使用外部签名服务
             def external_sign(uri, data=None, a1="", web_session=""):
-                """调用外部签名服务"""
-                try:
-                    logger.info(f"请求签名 - URI: {uri}")
-                    sys.stdout.flush()
-                    
-                    response = requests.post(
-                        f"{sign_server_url}/sign",
-                        json={
-                            "uri": uri,
-                            "data": data,
-                            "a1": a1,
-                            "web_session": web_session
-                        },
-                        timeout=10
-                    )
-                    response.raise_for_status()
-                    signs = response.json()
-                    
-                    logger.info(f"签名获取成功: {signs}")
-                    sys.stdout.flush()
-                    return signs
-                except Exception as e:
-                    logger.error(f"签名服务请求失败: {str(e)}")
-                    sys.stdout.flush()
-                    raise
+                """
+                调用外部签名服务（带重试机制）
+                参考：https://github.com/ReaJason/xhs/blob/master/example/basic_usage.py
+                
+                注意：即便签名服务做了重试，还是有可能会遇到签名失败的情况，
+                因此这里也添加重试机制
+                """
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        logger.info(f"[尝试 {attempt + 1}/{max_retries}] 请求签名 - URI: {uri}")
+                        sys.stdout.flush()
+                        
+                        response = requests.post(
+                            f"{sign_server_url}/sign",
+                            json={
+                                "uri": uri,
+                                "data": data,
+                                "a1": a1,
+                                "web_session": web_session
+                            },
+                            timeout=15  # 增加超时时间，因为签名服务内部也有重试
+                        )
+                        response.raise_for_status()
+                        signs = response.json()
+                        
+                        # 检查返回格式
+                        if 'x-s' not in signs or 'x-t' not in signs:
+                            raise ValueError(f"签名服务返回格式错误: {signs}")
+                        
+                        logger.info(f"[尝试 {attempt + 1}/{max_retries}] ✅ 签名获取成功")
+                        sys.stdout.flush()
+                        return signs
+                        
+                    except Exception as e:
+                        logger.warning(f"[尝试 {attempt + 1}/{max_retries}] ❌ 签名请求失败: {str(e)}")
+                        sys.stdout.flush()
+                        
+                        # 如果是最后一次尝试，抛出异常
+                        if attempt == max_retries - 1:
+                            logger.error(f"签名服务请求失败（重试{max_retries}次）")
+                            sys.stdout.flush()
+                            raise
+                        
+                        # 否则等待后重试
+                        wait_time = 1 * (attempt + 1)  # 递增等待时间
+                        logger.info(f"等待 {wait_time} 秒后重试...")
+                        sys.stdout.flush()
+                        time.sleep(wait_time)
             
             # 创建客户端（必须提供 sign 参数）
             client = XhsClient(cookie=cookie, sign=external_sign)

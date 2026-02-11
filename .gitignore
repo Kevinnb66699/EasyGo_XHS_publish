@@ -48,4 +48,4 @@ env/
 Thumbs.db
 
 # 签名服务器（独立仓库）
-xhs-sign-server/
+EasyGo-xhs-sign-server/

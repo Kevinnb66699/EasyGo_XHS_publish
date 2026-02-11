@@ -80,18 +80,41 @@ def retry_on_failure(max_retries=3, delay=1):
 
 
 def validate_cookie(cookie: str) -> bool:
-    """验证 Cookie 格式是否包含必要字段"""
+    """
+    验证 Cookie 格式是否包含必要字段
+    
+    根据官方文档：https://reajason.github.io/xhs/basic.html
+    小红书 Cookie 必须包含以下三个字段：
+    - a1: 主要认证字段
+    - web_session: 会话标识
+    - webId: 设备/浏览器标识
+    """
     if not cookie:
         return False
-    required_fields = ['a1']
+    
+    # 小红书必需的三个 Cookie 字段
+    required_fields = ['a1', 'web_session', 'webId']
     cookie_dict = {}
+    
     for item in cookie.split(';'):
         item = item.strip()
         if '=' in item:
             key, value = item.split('=', 1)
             cookie_dict[key.strip()] = value.strip()
     
-    return all(field in cookie_dict for field in required_fields)
+    # 检查是否所有必需字段都存在且非空
+    missing_fields = [field for field in required_fields if field not in cookie_dict or not cookie_dict[field]]
+    
+    if missing_fields:
+        logger.warning(f"❌ Cookie 缺少必需字段: {', '.join(missing_fields)}")
+        logger.warning(f"   当前 Cookie 包含的字段: {list(cookie_dict.keys())}")
+        logger.warning(f"   请确保 Cookie 包含: a1, web_session, webId")
+        sys.stdout.flush()
+        return False
+    
+    logger.info(f"✅ Cookie 验证通过，包含所有必需字段: {required_fields}")
+    sys.stdout.flush()
+    return True
 
 
 # ========== 全局错误处理器 ==========
@@ -208,7 +231,9 @@ def publish():
             sys.stdout.flush()
             return jsonify({
                 'success': False,
-                'error': 'Invalid cookie format or expired'
+                'error': 'Invalid cookie: missing required fields',
+                'message': 'Cookie must contain: a1, web_session, and webId',
+                'hint': 'Please get complete cookie from xiaohongshu.com while logged in'
             }), 401
         
         # 2. 解析并验证请求体

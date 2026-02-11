@@ -281,13 +281,22 @@ def publish():
             
             if not sign_server_url:
                 logger.error("❌ 未配置 XHS_SIGN_SERVER_URL 环境变量")
-                logger.error("在 Vercel 上必须配置外部签名服务器才能使用")
-                logger.error("请参考文档配置签名服务: https://github.com/ReaJason/xhs")
+                logger.error("请先启动签名服务器并设置环境变量")
+                logger.error("")
+                logger.error("启动步骤：")
+                logger.error("  1. 启动签名服务器: python sign_server.py")
+                logger.error("  2. 设置环境变量: set XHS_SIGN_SERVER_URL=http://localhost:5005")
+                logger.error("  3. 启动发布服务器: python app.py")
+                logger.error("")
+                logger.error("或者使用快捷脚本: start_all.bat (Windows) 或 ./start_all.sh (Linux/Mac)")
+                logger.error("")
+                logger.error("详细文档: README_SIGN_SERVER.md")
                 sys.stdout.flush()
                 return jsonify({
                     'success': False,
                     'error': 'XHS_SIGN_SERVER_URL environment variable is required',
-                    'message': 'Please configure an external signature service for Vercel deployment'
+                    'message': 'Please start sign_server.py first and set XHS_SIGN_SERVER_URL environment variable',
+                    'hint': 'Run: python sign_server.py, then set XHS_SIGN_SERVER_URL=http://localhost:5005'
                 }), 500
             
             logger.info(f"✅ 使用外部签名服务: {sign_server_url}")

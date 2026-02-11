@@ -311,31 +311,53 @@ def publish():
             logger.info(f"   webId: {cookie_web_id[:20]}...")
             sys.stdout.flush()
             
+            # 签名缓存（避免相同请求重复签名）
+            sign_cache = {}
+            sign_request_count = [0]  # 使用列表以便在闭包中修改
+            
             # 使用外部签名服务
             def external_sign(uri, data=None, a1="", web_session=""):
                 """
-                调用外部签名服务（带重试机制）
-                参考：https://github.com/ReaJason/xhs/blob/master/example/basic_usage.py
+                调用外部签名服务（带重试机制和智能缓存）
                 
-                重要发现（基于官方代码分析）：
-                1. 签名生成只依赖 uri 和 data，不使用 a1/web_session 参数
-                2. 签名服务器应该使用固定的 Cookie，不要每次请求都切换
-                3. 用户的 Cookie 用于实际的 API 请求，不影响签名生成
+                注意：发布笔记需要多次签名是正常的！
+                - 获取上传凭证（/api/media/v1/upload/web/permit）
+                - 上传图片（可能需要签名）
+                - 发布笔记（/web_api/sns/v2/note）
+                每个请求的 URI 和 data 不同，签名也必须不同，不能重用！
                 
-                因此新策略：
-                - 传递参数给签名服务（保持接口兼容）
-                - 但签名服务不会频繁切换 Cookie
-                - 避免触发小红书风控机制
+                优化策略：
+                - 对于相同的 uri + data，使用缓存（避免重复请求）
+                - 失败后才重试，成功的签名直接使用
                 """
-                # 如果 XhsClient 没有传递，使用从 Cookie 中提取的值（保持兼容）
+                # 如果 XhsClient 没有传递，使用从 Cookie 中提取的值
                 actual_a1 = a1 if a1 else cookie_a1
                 actual_web_session = web_session if web_session else cookie_web_session
                 actual_web_id = cookie_web_id
                 
+                # 生成缓存键（基于 uri 和 data）
+                import json
+                import hashlib
+                cache_key = hashlib.md5(
+                    f"{uri}:{json.dumps(data, sort_keys=True)}".encode()
+                ).hexdigest()
+                
+                # 检查缓存
+                if cache_key in sign_cache:
+                    logger.info(f"♻️ 使用缓存的签名 - URI: {uri}")
+                    sys.stdout.flush()
+                    return sign_cache[cache_key]
+                
+                # 增加请求计数
+                sign_request_count[0] += 1
+                request_num = sign_request_count[0]
+                
                 max_retries = 3
+                last_error = None
+                
                 for attempt in range(max_retries):
                     try:
-                        logger.info(f"[尝试 {attempt + 1}/{max_retries}] 请求签名 - URI: {uri}")
+                        logger.info(f"📝 [签名请求 #{request_num}] [尝试 {attempt + 1}/{max_retries}] URI: {uri}")
                         sys.stdout.flush()
                         
                         response = requests.post(
@@ -356,23 +378,28 @@ def publish():
                         if 'x-s' not in signs or 'x-t' not in signs:
                             raise ValueError(f"签名服务返回格式错误: {signs}")
                         
-                        logger.info(f"[尝试 {attempt + 1}/{max_retries}] ✅ 签名获取成功")
+                        # 缓存成功的签名
+                        sign_cache[cache_key] = signs
+                        
+                        logger.info(f"✅ [签名请求 #{request_num}] 签名获取成功")
                         sys.stdout.flush()
                         return signs
                         
                     except Exception as e:
-                        logger.warning(f"[尝试 {attempt + 1}/{max_retries}] ❌ 签名请求失败: {str(e)}")
+                        last_error = e
+                        logger.warning(f"❌ [签名请求 #{request_num}] [尝试 {attempt + 1}/{max_retries}] 失败: {str(e)}")
                         sys.stdout.flush()
                         
-                        if attempt == max_retries - 1:
-                            logger.error(f"签名服务请求失败（重试{max_retries}次）")
+                        if attempt < max_retries - 1:
+                            wait_time = 1 * (attempt + 1)
+                            logger.info(f"⏳ 等待 {wait_time} 秒后重试...")
                             sys.stdout.flush()
-                            raise
-                        
-                        wait_time = 1 * (attempt + 1)
-                        logger.info(f"等待 {wait_time} 秒后重试...")
-                        sys.stdout.flush()
-                        time.sleep(wait_time)
+                            time.sleep(wait_time)
+                
+                # 所有重试都失败
+                logger.error(f"💥 [签名请求 #{request_num}] 重试 {max_retries} 次后仍然失败")
+                sys.stdout.flush()
+                raise last_error
             
             # 创建客户端（必须提供 sign 参数）
             client = XhsClient(cookie=cookie, sign=external_sign)
@@ -471,32 +498,84 @@ def publish():
         # 6. 发布笔记
         @retry_on_failure(max_retries=3, delay=2)
         def publish_note():
+            logger.info("=" * 60)
             logger.info("开始发布笔记到小红书")
+            logger.info("=" * 60)
             sys.stdout.flush()
             
             truncated_title = title[:20]
             if len(title) > 20:
-                logger.warning(f"标题被截断: {title} -> {truncated_title}")
+                logger.warning(f"⚠️ 标题被截断: {title} -> {truncated_title}")
                 sys.stdout.flush()
             
-            logger.info(f"调用 create_image_note，参数：")
-            logger.info(f"  title: {truncated_title}")
-            logger.info(f"  desc: {content[:50]}...")
-            logger.info(f"  files: {len(image_files)} 个文件")
-            logger.info(f"  is_private: {is_private}")
+            logger.info(f"📋 笔记参数：")
+            logger.info(f"  • 标题: {truncated_title}")
+            logger.info(f"  • 内容: {content[:100]}{'...' if len(content) > 100 else ''}")
+            logger.info(f"  • 内容长度: {len(content)} 字符")
+            logger.info(f"  • 图片数量: {len(image_files)}")
+            logger.info(f"  • 私密笔记: {is_private}")
+            
+            # 验证内容
+            if len(content) < 4:
+                logger.error("❌ 内容太短，小红书要求至少 4 个字符")
+                raise ValueError("Content too short, minimum 4 characters required")
+            
+            if len(truncated_title) < 1:
+                logger.error("❌ 标题不能为空")
+                raise ValueError("Title cannot be empty")
+            
             sys.stdout.flush()
             
-            # 确保调用方法正确
-            result = client.create_image_note(
-                truncated_title,  # title
-                content,           # desc
-                image_files,       # files
-                is_private=is_private
-            )
-            
-            logger.info(f"小红书 API 返回: {result}")
+            # 记录即将开始的 API 调用流程
+            logger.info("📡 开始 API 调用流程：")
+            logger.info("  步骤1: 获取图片上传凭证（需要签名）")
+            logger.info("  步骤2: 上传图片文件")
+            logger.info("  步骤3: 发布笔记内容（需要签名）")
             sys.stdout.flush()
-            return result
+            
+            try:
+                # 调用发布方法
+                result = client.create_image_note(
+                    truncated_title,  # title
+                    content,           # desc
+                    image_files,       # files
+                    is_private=is_private
+                )
+                
+                logger.info(f"✅ 小红书 API 返回: {result}")
+                sys.stdout.flush()
+                return result
+                
+            except Exception as e:
+                # 详细的错误日志
+                logger.error("=" * 60)
+                logger.error(f"❌ 发布失败！错误类型: {type(e).__name__}")
+                logger.error(f"❌ 错误信息: {str(e)}")
+                
+                # 如果是 DataFetchError，提取详细信息
+                if hasattr(e, 'args') and len(e.args) > 0:
+                    error_data = e.args[0]
+                    if isinstance(error_data, dict):
+                        logger.error(f"❌ 错误代码: {error_data.get('code', 'unknown')}")
+                        logger.error(f"❌ 错误消息: {error_data.get('msg', 'no message')}")
+                        
+                        # 根据错误代码提供建议
+                        code = error_data.get('code')
+                        if code == -1:
+                            logger.error("💡 code: -1 可能原因：")
+                            logger.error("   1. 内容违规（敏感词、广告等）")
+                            logger.error("   2. 图片格式或大小问题")
+                            logger.error("   3. 标题或内容格式不符合要求")
+                            logger.error("   4. 请求过于频繁")
+                            logger.error("   5. Cookie 已过期或无效")
+                        elif code == -100:
+                            logger.error("💡 code: -100 表示无登录信息，请检查 Cookie")
+                        elif code == 300012:
+                            logger.error("💡 code: 300012 表示需要验证码")
+                
+                logger.error("=" * 60)
+                sys.stdout.flush()
+                raise
         
         result = publish_note()
         
@@ -519,16 +598,55 @@ def publish():
         
     except Exception as e:
         logger.error("=" * 50)
-        logger.error(f"发布过程中发生错误: {type(e).__name__}")
-        logger.error(f"错误详情: {str(e)}", exc_info=True)
+        logger.error(f"❌ 发布过程中发生错误: {type(e).__name__}")
+        logger.error(f"❌ 错误详情: {str(e)}", exc_info=True)
         logger.error("=" * 50)
         sys.stdout.flush()
         
-        return jsonify({
+        # 构建详细的错误响应
+        error_response = {
             'success': False,
             'error': str(e),
             'error_type': type(e).__name__
-        }), 500
+        }
+        
+        # 如果是 DataFetchError，提取小红书的错误信息
+        if hasattr(e, 'args') and len(e.args) > 0:
+            error_data = e.args[0]
+            if isinstance(error_data, dict):
+                error_response['xhs_error'] = error_data
+                error_response['xhs_code'] = error_data.get('code')
+                error_response['xhs_msg'] = error_data.get('msg', '')
+                
+                # 根据错误代码提供建议
+                code = error_data.get('code')
+                suggestions = []
+                
+                if code == -1:
+                    suggestions = [
+                        "检查内容是否包含敏感词或广告",
+                        "检查图片格式是否正确（支持 jpg、png、gif、webp）",
+                        "检查标题和内容长度是否符合要求",
+                        "尝试降低请求频率",
+                        "重新获取 Cookie（可能已过期）"
+                    ]
+                elif code == -100:
+                    suggestions = [
+                        "Cookie 无效或已过期",
+                        "请重新登录小红书并获取新的 Cookie",
+                        "确保 Cookie 包含 a1、web_session、webId 三个字段"
+                    ]
+                elif code == 300012:
+                    suggestions = [
+                        "触发了验证码机制",
+                        "降低请求频率",
+                        "等待一段时间后再试"
+                    ]
+                
+                if suggestions:
+                    error_response['suggestions'] = suggestions
+        
+        return jsonify(error_response), 500
     
     finally:
         # 清理临时文件

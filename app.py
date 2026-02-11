@@ -413,8 +413,8 @@ def publish():
             #进行一次请求，获取签名端a1，并设置到cookie中
             response = requests.get(f"{sign_server_url}/web_a1")
             web_a1 = response.json().get('web_a1')
-            cookie.a1=web_a1
-
+            cookie.replace(cookie_a1,web_a1,1)
+                
             # 创建客户端（必须提供 sign 参数）
             client = XhsClient(cookie=cookie, sign=external_sign)
             

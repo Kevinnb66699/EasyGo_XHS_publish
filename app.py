@@ -293,19 +293,43 @@ def publish():
             logger.info(f"✅ 使用外部签名服务: {sign_server_url}")
             sys.stdout.flush()
             
+            # 从 Cookie 中提取 a1 和 web_session
+            cookie_dict = {}
+            for item in cookie.split(';'):
+                item = item.strip()
+                if '=' in item:
+                    key, value = item.split('=', 1)
+                    cookie_dict[key.strip()] = value.strip()
+            
+            cookie_a1 = cookie_dict.get('a1', '')
+            cookie_web_session = cookie_dict.get('web_session', '')
+            
+            logger.info(f"📝 从 Cookie 提取认证信息:")
+            logger.info(f"   a1: {cookie_a1[:20]}...")
+            logger.info(f"   web_session: {cookie_web_session[:20]}...")
+            sys.stdout.flush()
+            
             # 使用外部签名服务
             def external_sign(uri, data=None, a1="", web_session=""):
                 """
                 调用外部签名服务（带重试机制）
                 参考：https://github.com/ReaJason/xhs/blob/master/example/basic_usage.py
                 
-                注意：即便签名服务做了重试，还是有可能会遇到签名失败的情况，
-                因此这里也添加重试机制
+                重要：必须将用户 Cookie 中的 a1 和 web_session 传递给签名服务，
+                确保签名服务使用的 cookie 与请求使用的 cookie 一致，避免触发验证码。
+                
+                官方文档明确指出：
+                "多账号使用统一签名服务请确保 cookie 中的 a1 字段统一，防止签名一直出现错误"
                 """
+                # 如果 XhsClient 没有传递 a1/web_session，使用从 Cookie 中提取的值
+                actual_a1 = a1 if a1 else cookie_a1
+                actual_web_session = web_session if web_session else cookie_web_session
+                
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
                         logger.info(f"[尝试 {attempt + 1}/{max_retries}] 请求签名 - URI: {uri}")
+                        logger.info(f"[尝试 {attempt + 1}/{max_retries}] 使用 a1: {actual_a1[:20]}...")
                         sys.stdout.flush()
                         
                         response = requests.post(
@@ -313,8 +337,8 @@ def publish():
                             json={
                                 "uri": uri,
                                 "data": data,
-                                "a1": a1,
-                                "web_session": web_session
+                                "a1": actual_a1,
+                                "web_session": actual_web_session
                             },
                             timeout=15  # 增加超时时间，因为签名服务内部也有重试
                         )

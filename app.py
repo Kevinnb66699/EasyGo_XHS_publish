@@ -410,13 +410,47 @@ def publish():
                 sys.stdout.flush()
                 raise last_error
             
-            #进行一次请求，获取签名端a1，并设置到cookie中
-            response = requests.get(f"{sign_server_url}/web_a1")
-            web_a1 = response.json().get('web_a1')
-            logger.info(f"✅ 签名端a1: {web_a1}")
+            # 进行一次请求，获取签名端 a1，并设置到 cookie 中
+            logger.info(f"📡 正在从签名服务器获取 a1...")
             sys.stdout.flush()
-            cookie.replace(cookie_a1,web_a1)
-            logger.info(f"✅ 更新后cookie: {cookie[:50]}...")
+            
+            try:
+                response = requests.get(f"{sign_server_url}/web_a1", timeout=10)
+                response.raise_for_status()
+                web_a1 = response.json().get('web_a1')
+                
+                if not web_a1:
+                    logger.error(f"❌ 签名服务器返回的 web_a1 为空")
+                    logger.error(f"   响应: {response.text[:200]}")
+                    sys.stdout.flush()
+                    return jsonify({
+                        'success': False,
+                        'error': 'Failed to get web_a1 from sign server',
+                        'message': 'Sign server returned empty web_a1'
+                    }), 500
+                
+                logger.info(f"✅ 签名端 a1: {web_a1[:30]}...")
+                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"❌ 获取签名端 a1 失败: {e}")
+                sys.stdout.flush()
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to get web_a1 from sign server',
+                    'message': str(e)
+                }), 500
+            
+            # 修复：必须把 replace 的返回值赋值回 cookie！
+            if cookie_a1 and web_a1:
+                logger.info(f"🔄 正在替换 cookie 中的 a1 字段")
+                logger.info(f"   原 a1: {cookie_a1[:30]}...")
+                logger.info(f"   新 a1: {web_a1[:30]}...")
+                cookie = cookie.replace(cookie_a1, web_a1)
+                logger.info(f"✅ cookie 中的 a1 已更新")
+            else:
+                logger.warning(f"⚠️ 无法替换 a1: cookie_a1={bool(cookie_a1)}, web_a1={bool(web_a1)}")
+            
+            logger.info(f"✅ 更新后 cookie: {cookie[:80]}...")
             sys.stdout.flush()
 
             # 创建客户端（必须提供 sign 参数）
